@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from telegram import ParseMode, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
-from telegram.ext import CallbackContext, CommandHandler, Filters, MessageHandler, Updater
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, Update
+from telegram.ext import CallbackContext, CallbackQueryHandler, CommandHandler, Filters, MessageHandler, Updater
 
 BASE_DIR = Path(__file__).resolve().parent
 CONTENT_PATH = BASE_DIR / "content.txt"
@@ -118,32 +118,35 @@ def _split_text(text: str, max_len: int = 3500) -> List[str]:
     return final_parts
 
 
-def send_step(chat_id: int, context: CallbackContext, step: Step) -> None:
+def send_step(chat_id: int, context: CallbackContext, step: Step, step_index: int) -> None:
     keyboard = None
     if step.button:
-        keyboard = ReplyKeyboardMarkup([[step.button]], resize_keyboard=True, one_time_keyboard=False)
-    else:
-        keyboard = ReplyKeyboardRemove()
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(step.button, callback_data=f"step:{step_index}")]]
+        )
+
+    has_videos = len(step.videos) > 0
 
     if step.text:
         text = _bold_first_line(step.text)
-        for i, chunk in enumerate(_split_text(text)):
+        chunks = _split_text(text)
+        for i, chunk in enumerate(chunks):
+            attach_keyboard = (not has_videos) and keyboard and i == len(chunks) - 1
             context.bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
                 parse_mode=ParseMode.HTML,
-                reply_markup=keyboard if i == 0 else None,
+                reply_markup=keyboard if attach_keyboard else None,
             )
-        keyboard = None
 
-    for video_path in step.videos:
+    for i, video_path in enumerate(step.videos):
+        attach_keyboard = keyboard and i == len(step.videos) - 1
         if not video_path.exists():
             context.bot.send_message(
                 chat_id=chat_id,
                 text=f"Видео не найдено: {video_path.name}",
-                reply_markup=keyboard,
+                reply_markup=keyboard if attach_keyboard else None,
             )
-            keyboard = None
             continue
         file_id = FILE_ID_MAP.get(video_path.stem.split()[-1])
         try:
@@ -151,22 +154,21 @@ def send_step(chat_id: int, context: CallbackContext, step: Step) -> None:
                 context.bot.send_video(
                     chat_id=chat_id,
                     video=file_id,
-                    reply_markup=keyboard,
+                    reply_markup=keyboard if attach_keyboard else None,
                 )
             else:
                 with video_path.open("rb") as f:
                     context.bot.send_video(
                         chat_id=chat_id,
                         video=f,
-                        reply_markup=keyboard,
+                        reply_markup=keyboard if attach_keyboard else None,
                     )
         except Exception:
             context.bot.send_message(
                 chat_id=chat_id,
                 text=f"Не удалось отправить видео: {video_path.name}",
-                reply_markup=keyboard,
+                reply_markup=keyboard if attach_keyboard else None,
             )
-        keyboard = None
 
     if not step.text and not step.videos:
         context.bot.send_message(chat_id=chat_id, text="(Пустой шаг)", reply_markup=keyboard)
@@ -177,12 +179,11 @@ def send_from_index(chat_id: int, context: CallbackContext, index: int) -> None:
     idx = index
     while idx < len(steps):
         step = steps[idx]
-        send_step(chat_id, context, step)
+        send_step(chat_id, context, step, idx)
         if step.button:
             context.user_data["step_index"] = idx
             return
         idx += 1
-    context.bot.send_message(chat_id=chat_id, text="Курс завершен. Спасибо!")
     context.user_data["step_index"] = len(steps)
 
 
@@ -195,25 +196,23 @@ def reset(update: Update, context: CallbackContext) -> None:
     start(update, context)
 
 
-def handle_message(update: Update, context: CallbackContext) -> None:
-    steps = context.bot_data["steps"]
-    idx = context.user_data.get("step_index", 0)
+def handle_text(update: Update, context: CallbackContext) -> None:
+    return
 
-    if idx >= len(steps):
-        update.message.reply_text("Курс завершен. Напиши /start чтобы начать снова.")
+
+def handle_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
         return
-
-    expected = steps[idx].button
-    if expected and update.message.text.strip() != expected:
+    query.answer()
+    data = query.data or ""
+    if not data.startswith("step:"):
         return
-
-    idx += 1
-    if idx >= len(steps):
-        update.message.reply_text("Курс завершен. Спасибо!", reply_markup=ReplyKeyboardRemove())
-        context.user_data["step_index"] = idx
+    try:
+        idx = int(data.split(":", 1)[1])
+    except ValueError:
         return
-
-    send_from_index(update.effective_chat.id, context, idx)
+    send_from_index(query.message.chat_id, context, idx + 1)
 
 
 def handle_media(update: Update, context: CallbackContext) -> None:
@@ -240,7 +239,8 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("reset", reset))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dispatcher.add_handler(CallbackQueryHandler(handle_callback))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
     dispatcher.add_handler(MessageHandler(Filters.video | Filters.document, handle_media))
 
     print("Bot is running...")
