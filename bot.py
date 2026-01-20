@@ -268,6 +268,28 @@ def send_step(chat_id: int, context: CallbackContext, step: Step, step_index: in
 
     for i, video_path in enumerate(step.videos):
         attach_keyboard = keyboard and i == len(step.videos) - 1
+        file_id = FILE_ID_MAP.get(video_path.stem.split()[-1])
+        if file_id:
+            try:
+                context.bot.send_video(
+                    chat_id=chat_id,
+                    video=file_id,
+                    reply_markup=keyboard if attach_keyboard else None,
+                )
+            except Unauthorized:
+                set_user_inactive(chat_id)
+                return
+            except Exception:
+                try:
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"Не удалось отправить видео: {video_path.name}",
+                        reply_markup=keyboard if attach_keyboard else None,
+                    )
+                except Unauthorized:
+                    set_user_inactive(chat_id)
+                    return
+            continue
         if not video_path.exists():
             try:
                 context.bot.send_message(
@@ -278,21 +300,13 @@ def send_step(chat_id: int, context: CallbackContext, step: Step, step_index: in
             except Unauthorized:
                 set_user_inactive(chat_id)
             continue
-        file_id = FILE_ID_MAP.get(video_path.stem.split()[-1])
         try:
-            if file_id:
+            with video_path.open("rb") as f:
                 context.bot.send_video(
                     chat_id=chat_id,
-                    video=file_id,
+                    video=f,
                     reply_markup=keyboard if attach_keyboard else None,
                 )
-            else:
-                with video_path.open("rb") as f:
-                    context.bot.send_video(
-                        chat_id=chat_id,
-                        video=f,
-                        reply_markup=keyboard if attach_keyboard else None,
-                    )
         except Unauthorized:
             set_user_inactive(chat_id)
             return

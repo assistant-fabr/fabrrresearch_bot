@@ -3,5 +3,7 @@
 bot.log
 __pycache__/
 *.pyc
+dep_key
+dep_key.pub
 videos/
 users.db
